@@ -1,0 +1,132 @@
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev # You can set a default or leave it blank
+    Description: The environment name (e.g., dev, prod)
+Resources:
+  VPC3:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC3
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-east-1a
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC3
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: us-east-1b
+  InternetGateway3:
+    Type: AWS::EC2::InternetGateway
+  VPCGatewayAttachment3:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC3
+      InternetGatewayId: !Ref InternetGateway3
+  Route3:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGateway3
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway3
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC3
+  SubnetRouteTableAssociation3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+  PublicInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-0e449927258d45bc4
+      SubnetId: !Ref PublicSubnet
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-LambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaS3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: '*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      FunctionName: !Sub ${EnvironmentName}-S3TriggerLambda
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 30
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              print("S3 Event Triggered:", event)
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${EnvironmentName}-${AWS::AccountId}-s3-trigger
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DependsOn: LambdaInvokePermission # ✅ Avoids race conditions
+    Properties:
+      BucketName: !Sub ${EnvironmentName}-${AWS::AccountId}-s3-trigger
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt LambdaFunction.Arn
+
+Outputs:
+  VPCId:
+    Description: Created VPC ID
+    Value: !Ref VPC3
+
+  PublicSubnetId:
+    Description: Public Subnet ID
+    Value: !Ref PublicSubnet
+
+  EC2InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref PublicInstance
+
+  S3BucketName:
+    Description: Created S3 Bucket Name
+    Value: !Ref S3Bucket
+
+  LambdaFunctionName:
+    Description: Created Lambda Function
+    Value: !Ref LambdaFunction
